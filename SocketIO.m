@@ -73,6 +73,10 @@ NSString* const SocketIOException = @"SocketIOException";
 # pragma mark SocketIO implementation
 
 @implementation SocketIO
+{
+    BOOL _didErrorWebSocketConnection;
+}
+
 
 @synthesize isConnected = _isConnected, 
             isConnecting = _isConnecting, 
@@ -190,6 +194,12 @@ NSString* const SocketIOException = @"SocketIOException";
     
     [self onDisconnect:error];
 }
+
+-(void) reconnect {
+    DEBUGLOG(@"reconnect");
+    [self connectToHost:self.host onPort:self.port];
+}
+
 
 - (void) sendMessage:(NSString *)data
 {
@@ -578,6 +588,10 @@ NSString* const SocketIOException = @"SocketIOException";
             }
             case 7: {
                 DEBUGLOG(@"error");
+                if([packet.data isEqualToString:@"1+0"]) {
+                    [self disconnectForced];
+                    [self reconnect];
+                }                
                 break;
             }
             case 8: {
@@ -623,9 +637,19 @@ NSString* const SocketIOException = @"SocketIOException";
     }
     
     if ((wasConnected || wasConnecting)) {
-        if ([_delegate respondsToSelector:@selector(socketIODidDisconnect:disconnectedWithError:)]) {
-            [_delegate socketIODidDisconnect:self disconnectedWithError:error];
-        }
+        if ([_transport isKindOfClass:[SocketIOTransportWebsocket class]] &&
+            ([error.domain isEqualToString:(NSString*)kCFErrorDomainCFNetwork] ||
+             ([error.domain isEqualToString:SocketIOError] && error.code == SocketIOWebSocketClosed)
+             )) {
+                // WebSocket接続でネットワークエラーが発生した場合はエラーにせず、別のプロトコルでリコネクトする。実環境で発生したエラーコードは 2 だったが、コードについては限定しない。
+                DEBUGLOG(@"web socket network error.  will retry.");
+                _didErrorWebSocketConnection = YES;
+                [self reconnect];
+            } else {
+                if ([_delegate respondsToSelector:@selector(socketIODidDisconnect:disconnectedWithError:)]) {
+                    [_delegate socketIODidDisconnect:self disconnectedWithError:error];
+                }
+            }
     }
 }
 
@@ -739,7 +763,7 @@ NSString* const SocketIOException = @"SocketIOException";
         NSArray *transports = [t componentsSeparatedByString:@","];
         DEBUGLOG(@"transports: %@", transports);
         
-        if ([transports indexOfObject:@"websocket"] != NSNotFound) {
+        if ([transports indexOfObject:@"websocket"] != NSNotFound && !_didErrorWebSocketConnection) {
             DEBUGLOG(@"websocket supported -> using it now");
             _transport = [[SocketIOTransportWebsocket alloc] initWithDelegate:self];
         }
